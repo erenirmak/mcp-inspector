@@ -1,0 +1,26 @@
+name: Secret Leaks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  trufflehog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Scans entire history
+
+      - name: Secret Scanning
+        uses: trufflesecurity/trufflehog@v3.92.4
+        with:
+          # Scans the 'base' of the PR or the branch history
+          base: "" 
+          head: ${{ github.ref_name }}
+          extra_args: --results=verified,unknown #--exclude-detectors=postgres
