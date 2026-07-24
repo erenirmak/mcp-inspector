@@ -21,6 +21,6 @@ jobs:
         uses: trufflesecurity/trufflehog@v3.92.4
         with:
           # Scans the 'base' of the PR or the branch history
-          base: "" 
+          base: ""
           head: ${{ github.ref_name }}
           extra_args: --results=verified,unknown #--exclude-detectors=postgres
