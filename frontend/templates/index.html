@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Inspector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.1/socket.io.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .scroll-smooth { scroll-behavior: smooth; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .pulse-dot { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen overflow-hidden flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm z-10">
+        <div class="flex items-center gap-3">
+            <div class="bg-indigo-600 text-white p-2 rounded-lg">
+                <i class="fa-solid fa-microchip"></i>
+            </div>
+            <h1 class="text-xl font-bold text-gray-800">MCP Inspector <span class="text-xs font-normal text-gray-500 ml-2">v0.2.0</span></h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <div id="connectionStatus" class="flex items-center gap-2 px-3 py-1 rounded-full bg-gray-100 text-gray-500 text-sm">
+                <div class="w-2 h-2 rounded-full bg-gray-400" id="statusDot"></div>
+                <span id="statusText">Disconnected</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex overflow-hidden">
+
+        <!-- Sidebar -->
+        <aside class="w-80 bg-white border-r border-gray-200 flex flex-col h-full overflow-y-auto z-10 shadow-lg">
+            <div class="p-5 space-y-5">
+
+                <!-- Quick Connect -->
+                <div class="space-y-3">
+                    <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Quick Connect</h2>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
+                        <select id="connType" class="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5">
+                            <option value="stdio">Local Process (stdio)</option>
+                            <option value="http">Remote (HTTP)</option>
+                        </select>
+                    </div>
+
+                    <div id="stdioFields" class="space-y-2">
+                        <input type="text" id="connCommand" placeholder="Command, e.g. python main.py" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                        <input type="text" id="connArgs" placeholder="Args (optional)" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                    </div>
+
+                    <div id="sseFields" class="space-y-2 hidden">
+                        <input type="text" id="connUrl" placeholder="http://localhost:8000/mcp" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                    </div>
+
+                    <button id="connectBtn" class="w-full text-white bg-indigo-600 hover:bg-indigo-700 font-medium rounded-lg text-sm px-5 py-2.5 shadow-md active:scale-95 transition-all">
+                        <i class="fa-solid fa-plug mr-2"></i> Connect
+                    </button>
+                </div>
+
+                <!-- Registered Servers -->
+                <div class="space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Registered Servers</h2>
+                        <button id="addServerBtn" title="Add server" class="text-indigo-600 hover:text-indigo-800 text-sm"><i class="fa-solid fa-plus"></i></button>
+                    </div>
+                    <div id="serverList" class="space-y-2 max-h-48 overflow-y-auto">
+                        <div class="text-xs text-gray-400 italic">No servers registered yet.</div>
+                    </div>
+                    <button id="refreshAllBtn" class="w-full text-xs text-indigo-600 hover:text-indigo-800 py-1"><i class="fa-solid fa-arrows-rotate mr-1"></i> Refresh All</button>
+                </div>
+
+                <!-- Tool Search -->
+                <div class="space-y-3">
+                    <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tool Search</h2>
+                    <div class="relative">
+                        <input type="text" id="toolSearchInput" placeholder="Search tools across all servers..." class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5 pr-10">
+                        <button id="toolSearchBtn" class="absolute right-2 top-1/2 -translate-y-1/2 text-indigo-600 hover:text-indigo-800">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                        </button>
+                    </div>
+                    <div id="searchResults" class="space-y-2 max-h-72 overflow-y-auto hidden"></div>
+                </div>
+
+                <!-- Activity Log -->
+                <div class="flex-1 flex flex-col min-h-[160px]">
+                    <div class="flex justify-between items-center mb-2">
+                         <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Activity Log</h2>
+                         <button id="clearLogs" class="text-xs text-indigo-600 hover:text-indigo-800">Clear</button>
+                    </div>
+                    <div id="logContainer" class="flex-1 bg-gray-900 rounded-lg p-3 overflow-y-auto font-mono text-xs text-green-400 border border-gray-700 shadow-inner h-48">
+                        <div class="opacity-50 text-gray-500 italic">Logs will appear here...</div>
+                    </div>
+                </div>
+
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <section class="flex-1 bg-gray-50 overflow-hidden flex flex-col relative">
+
+            <!-- Connection Strip (visible once ≥1 session exists) -->
+            <div id="connStrip" class="hidden bg-white border-b border-gray-100 px-4 py-2">
+                <div class="flex items-center gap-2 overflow-x-auto">
+                    <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider shrink-0">Sessions</span>
+                    <div id="connStripItems" class="flex items-center gap-1.5 flex-1 min-w-0"></div>
+                    <button id="newConnBtn" title="New connection"
+                        class="ml-auto shrink-0 w-6 h-6 flex items-center justify-center rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors text-xs">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Register Server Banner (shown for unregistered quick-connect sessions) -->
+            <div id="registerBanner" class="hidden mx-4 mt-3 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2.5 flex items-center gap-3">
+                <i class="fa-solid fa-cloud-arrow-up text-indigo-500 shrink-0"></i>
+                <p class="text-sm text-indigo-800 flex-1">
+                    This server isn't registered yet. Register it to track health &amp; enable tool search across sessions.
+                </p>
+                <div class="flex gap-2 shrink-0">
+                    <button id="registerBannerYes"
+                        class="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 font-medium transition-colors">
+                        Register
+                    </button>
+                    <button id="registerBannerNo"
+                        class="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1.5">
+                        Dismiss
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="bg-white border-b border-gray-200 px-6 flex gap-6">
+                <button class="tab-btn py-3 text-sm font-medium text-indigo-600 border-b-2 border-indigo-600" data-tab="tools">
+                    <i class="fa-solid fa-toolbox mr-2"></i> Tools
+                </button>
+                <button class="tab-btn py-3 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300" data-tab="resources">
+                    <i class="fa-solid fa-database mr-2"></i> Resources
+                </button>
+                <button class="tab-btn py-3 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent hover:border-gray-300" data-tab="prompts">
+                    <i class="fa-solid fa-comment-dots mr-2"></i> Prompts
+                </button>
+            </div>
+
+            <!-- Content Area -->
+            <div class="flex-1 overflow-y-auto p-6 scroll-smooth" id="contentArea">
+                <div id="placeholderState" class="flex flex-col items-center justify-center h-full text-gray-400">
+                    <i class="fa-solid fa-server text-6xl mb-4 opacity-20"></i>
+                    <p class="text-lg font-light">Connect to an MCP Server to inspect its capabilities.</p>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- Add Server Modal -->
+    <div id="addServerModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-xl shadow-2xl w-96 p-6 space-y-4">
+            <h3 class="text-lg font-bold text-gray-800">Register MCP Server</h3>
+            <input type="text" id="newServerName" placeholder="Server name" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+            <input type="text" id="newServerUrl" placeholder="http://server-url/mcp" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+            <select id="newServerType" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                <option value="http">HTTP</option>
+                <option value="stdio">stdio</option>
+            </select>
+            <div class="flex gap-3 justify-end">
+                <button id="cancelAddServer" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                <button id="confirmAddServer" class="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow">Add Server</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tool Execute Modal -->
+    <div id="toolExecModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-xl shadow-2xl w-[560px] max-h-[85vh] flex flex-col">
+            <!-- Header -->
+            <div class="flex items-start justify-between p-6 pb-2">
+                <div class="min-w-0 pr-4">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <h3 class="text-lg font-bold text-gray-800" id="execToolName">Tool Name</h3>
+                        <span class="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-xs font-semibold">Tool</span>
+                        <span id="execConnBadge" class="px-2 py-0.5 bg-gray-100 text-gray-500 rounded text-[10px] font-mono truncate max-w-[180px]"></span>
+                    </div>
+                    <p class="text-sm text-gray-500 mt-1 line-clamp-2 overflow-hidden" id="execToolDesc"></p>
+                </div>
+                <button id="closeExecModal" class="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <div class="overflow-y-auto flex-1 px-6 py-3 space-y-4">
+                <!-- Schema-driven argument form -->
+                <div id="execToolForm" class="space-y-3"></div>
+
+                <!-- Raw JSON fallback / override -->
+                <div>
+                    <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+                        Arguments JSON
+                        <span class="normal-case font-normal text-gray-400 ml-1">(fill form above or type raw JSON)</span>
+                    </label>
+                    <textarea id="execToolJson" rows="3"
+                        placeholder="{}"
+                        class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5 font-mono resize-none focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+                </div>
+
+                <!-- Result area (initially hidden) -->
+                <div id="execResultArea" class="hidden">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Result</span>
+                        <span id="execResultStatus" class="px-2 py-0.5 rounded-full text-white text-[10px] font-semibold"></span>
+                    </div>
+                    <pre id="execResultContent"
+                        class="bg-gray-900 text-green-300 rounded-lg p-3 text-xs overflow-auto max-h-52 whitespace-pre-wrap break-words font-mono"></pre>
+                </div>
+            </div>
+
+            <!-- Footer buttons -->
+            <div class="flex items-center justify-between gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-xl">
+                <span class="text-[11px] text-gray-400">
+                    REST: <code class="font-mono">POST /api/connections/<span id="execRestId" class="text-indigo-500"></span>/tools/execute</code>
+                </span>
+                <div class="flex gap-2">
+                    <button id="cancelExecModal" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 rounded-lg">Cancel</button>
+                    <button id="runToolBtn"
+                        class="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 rounded-lg shadow transition-all">
+                        <i class="fa-solid fa-play mr-2 text-xs"></i> Execute
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

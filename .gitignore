@@ -29,3 +29,6 @@ desktop.ini
 *.log
 .env
 .secrets
+minimal_mcp.py
+*.db*
+app_out.txt
