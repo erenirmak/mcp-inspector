@@ -98,7 +98,7 @@ def add_server():
             return (
                 jsonify(
                     {
-                        "error": f"A server with this URL is already registered as \"{existing.name}\".",
+                        "error": f'A server with this URL is already registered as "{existing.name}".',
                         "existing_id": existing.id,
                     }
                 ),

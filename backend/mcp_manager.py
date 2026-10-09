@@ -169,9 +169,7 @@ async def _http_transport(target: str, conn_type: str, api_key: str = ""):
 
         client = httpx.AsyncClient(headers=headers) if headers else None
         try:
-            async with streamable_http_client(
-                target, http_client=client
-            ) as (read, write, session):
+            async with streamable_http_client(target, http_client=client) as (read, write, session):
                 yield read, write, session
         finally:
             if client is not None:
