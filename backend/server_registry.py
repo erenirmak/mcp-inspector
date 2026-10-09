@@ -14,9 +14,13 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 
+from mcp import StdioServerParameters
+from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client
+
 from .config import HEALTH_CHECK_INTERVAL, MAX_CONCURRENT_PROBES
 from .db import ServerModel, get_db
-from .mcp_manager import _fetch_server_data, is_url_busy
+from .mcp_manager import _fetch_server_data, _list_session_data, get_live_session_data, is_url_busy
 from .tool_search import tool_index
 
 log = logging.getLogger(__name__)
@@ -40,6 +44,8 @@ class ServerRecord:
     tools: list = field(default_factory=list)
     resources: list = field(default_factory=list)
     prompts: list = field(default_factory=list)
+    command: str = ""
+    args: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -97,6 +103,8 @@ class ServerRegistry:
                         tools=row.tools or [],
                         resources=row.resources or [],
                         prompts=row.prompts or [],
+                        command=getattr(row, "command", "") or "",
+                        args=getattr(row, "args", []) or [],
                     )
                     self._servers[rec.id] = rec
             log.info("Loaded %d server(s) from database", len(self._servers))
@@ -124,6 +132,8 @@ class ServerRegistry:
                 row.tools = rec.tools
                 row.resources = rec.resources
                 row.prompts = rec.prompts
+                row.command = rec.command
+                row.args = rec.args
         except Exception:
             log.exception("Failed to persist server %s to database", rec.id)
 
@@ -139,13 +149,37 @@ class ServerRegistry:
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def add_server(self, server_id: str, name: str, url: str, conn_type: str = "http") -> ServerRecord:
-        rec = ServerRecord(id=server_id, name=name, url=url, conn_type=conn_type)
+    def add_server(
+        self,
+        server_id: str,
+        name: str,
+        url: str,
+        conn_type: str = "http",
+        command: str = "",
+        args: list | None = None,
+    ) -> ServerRecord:
+        rec = ServerRecord(
+            id=server_id,
+            name=name,
+            url=url,
+            conn_type=conn_type,
+            command=command or "",
+            args=args or [],
+        )
         with self._lock:
             self._servers[server_id] = rec
         self._persist_server(rec)
         asyncio.run_coroutine_threadsafe(self._probe(server_id), self._loop)
         return rec
+
+    def find_by_url(self, url: str) -> ServerRecord | None:
+        """Return the first registered server whose URL matches *url* (case-insensitive)."""
+        target = url.strip().lower().rstrip("/")
+        with self._lock:
+            for rec in self._servers.values():
+                if rec.url.strip().lower().rstrip("/") == target:
+                    return rec
+        return None
 
     def remove_server(self, server_id: str) -> bool:
         with self._lock:
@@ -193,23 +227,24 @@ class ServerRegistry:
             rec = self._servers.get(server_id)
         if rec is None:
             return
+
+        # If a user is interactively connected to this URL, reuse the live
+        # session's data instead of opening a second connection (which the
+        # manager refuses while the URL is busy).
         if is_url_busy(rec.url):
+            data = get_live_session_data(rec.url)
+            if data is not None:
+                self._apply_data(rec, data)
             return
 
         try:
             if rec.conn_type in ("http", "sse"):
-                data = await _fetch_server_data(rec.url)
-                with self._lock:
-                    rec.tools = data["tools"]
-                    rec.resources = data["resources"]
-                    rec.prompts = data["prompts"]
-                    rec.online = True
-                    rec.last_checked = time.time()
-                    rec.last_error = ""
-                self._persist_server(rec)
-                # Rebuild the full-text search index so searches reflect fresh data
-                tool_index.rebuild(self.get_all_tools())
-            # stdio: probing requires a local process — skip silently
+                data = await _fetch_server_data(rec.url, rec.conn_type)
+            elif rec.conn_type == "stdio":
+                data = await self._probe_stdio(rec)
+            else:
+                return
+            self._apply_data(rec, data)
         except RuntimeError:
             # _fetch_server_data raises RuntimeError when the probe slot is busy
             log.debug("Probe skipped for %s — server busy", server_id)
@@ -222,6 +257,29 @@ class ServerRegistry:
                 rec.last_checked = time.time()
                 rec.last_error = safe_error
             self._persist_server(rec)
+
+    def _apply_data(self, rec: ServerRecord, data: dict) -> None:
+        """Apply probe data to a record, persist it, and refresh the tool index."""
+        with self._lock:
+            rec.tools = data["tools"]
+            rec.resources = data["resources"]
+            rec.prompts = data["prompts"]
+            rec.online = True
+            rec.last_checked = time.time()
+            rec.last_error = ""
+        self._persist_server(rec)
+        # Rebuild the full-text search index so searches reflect fresh data
+        tool_index.rebuild(self.get_all_tools())
+
+    async def _probe_stdio(self, rec: ServerRecord) -> dict:
+        """Probe a stdio server by spawning its process and listing capabilities."""
+        if not rec.command:
+            raise ValueError("stdio server has no command configured")
+        params = StdioServerParameters(command=rec.command, args=list(rec.args))
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await _list_session_data(session)
 
     async def _probe_all(self) -> None:
         """Probe all registered servers in parallel, bounded by MAX_CONCURRENT_PROBES."""

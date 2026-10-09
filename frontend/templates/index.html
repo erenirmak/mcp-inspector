@@ -169,9 +169,16 @@
         <div class="bg-white rounded-xl shadow-2xl w-96 p-6 space-y-4">
             <h3 class="text-lg font-bold text-gray-800">Register MCP Server</h3>
             <input type="text" id="newServerName" placeholder="Server name" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
-            <input type="text" id="newServerUrl" placeholder="http://server-url/mcp" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+            <div id="newServerUrlWrap">
+                <input type="text" id="newServerUrl" placeholder="http://server-url/mcp" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+            </div>
+            <div id="newServerStdioWrap" class="hidden space-y-2">
+                <input type="text" id="newServerCommand" placeholder="Command (e.g. npx, python)" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                <input type="text" id="newServerArgs" placeholder="Args, comma-separated (e.g. -m, my_server)" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+            </div>
             <select id="newServerType" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
-                <option value="http">HTTP</option>
+                <option value="http">HTTP (Streamable)</option>
+                <option value="sse">SSE</option>
                 <option value="stdio">stdio</option>
             </select>
             <div class="flex gap-3 justify-end">

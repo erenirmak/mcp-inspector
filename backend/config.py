@@ -10,8 +10,15 @@ import logging
 import os
 import secrets
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FutureTimeout
 
 log = logging.getLogger(__name__)
+
+# Bounded-timeout DNS resolver. getaddrinfo is a blocking syscall that can hang
+# for tens of seconds on slow/blackholed DNS; running it in a small thread pool
+# lets us impose a hard timeout without freezing the request thread.
+_resolver = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dns-resolver")
 
 # ── Secret key ──────────────────────────────────────────────────────────────
 _raw_secret = os.environ.get("SECRET_KEY", "").strip()
@@ -151,11 +158,19 @@ def validate_server_url(url: str) -> str:
         if hostname == trusted or hostname.endswith("." + trusted):
             return url
 
-    # Resolve and check every IP the hostname maps to
+    # Resolve and check every IP the hostname maps to.
+    # getaddrinfo can block for 10-30s+ (or indefinitely) on slow/hanging DNS,
+    # which would freeze the Flask request thread. Run it in a worker thread
+    # with a hard timeout so registration never hangs.
     import socket as _sock
 
+    def _resolve(host: str):
+        return _sock.getaddrinfo(host, None)
+
     try:
-        infos = _sock.getaddrinfo(hostname, None)
+        infos = _resolver.submit(_resolve, hostname).result(timeout=3)
+    except _FutureTimeout:
+        raise ValueError(f'DNS resolution for "{hostname}" timed out.')
     except _sock.gaierror:
         raise ValueError(f'Cannot resolve hostname "{hostname}".')
 

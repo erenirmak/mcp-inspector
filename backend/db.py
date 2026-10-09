@@ -43,6 +43,32 @@ class ServerModel(Base):
     tools = Column(_JSON, default=list, nullable=False)
     resources = Column(_JSON, default=list, nullable=False)
     prompts = Column(_JSON, default=list, nullable=False)
+    command = Column(Text, default="")
+    args = Column(_JSON, default=list, nullable=False)
+
+
+def _migrate_add_columns(engine, is_postgres: bool) -> None:
+    """Add columns that ``create_all`` cannot add to an existing table.
+
+    ``create_all`` only creates missing tables; it never alters existing ones.
+    This lightweight migration adds the ``command``/``args`` columns to a
+    pre-existing ``servers`` table (SQLite and PostgreSQL).
+    """
+    from sqlalchemy import inspect, text
+
+    try:
+        existing = {c["name"] for c in inspect(engine).get_columns("servers")}
+    except Exception:
+        return  # table doesn't exist yet (fresh DB) — create_all handled it
+
+    with engine.begin() as conn:
+        if "command" not in existing:
+            conn.execute(text("ALTER TABLE servers ADD COLUMN command TEXT DEFAULT ''"))
+            log.info("Migration: added servers.command column")
+        if "args" not in existing:
+            col_type = "JSON" if is_postgres else "JSON"
+            conn.execute(text(f"ALTER TABLE servers ADD COLUMN args {col_type} DEFAULT '[]'"))
+            log.info("Migration: added servers.args column")
 
 
 # ── Engine / session factory ──────────────────────────────────────────────────
@@ -86,6 +112,7 @@ def init_db(database_url: str) -> None:
             log.info("Using SQLite: %s", database_url)
 
         Base.metadata.create_all(_engine)
+        _migrate_add_columns(_engine, is_postgres)
         _SessionLocal = sessionmaker(
             bind=_engine,
             autocommit=False,

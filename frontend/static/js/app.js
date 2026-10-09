@@ -451,15 +451,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Toggle URL vs stdio fields based on the selected type
+    document.getElementById('newServerType').addEventListener('change', () => {
+        const type = document.getElementById('newServerType').value;
+        document.getElementById('newServerUrlWrap').classList.toggle('hidden', type === 'stdio');
+        document.getElementById('newServerStdioWrap').classList.toggle('hidden', type !== 'stdio');
+    });
+
     confirmAddServer.addEventListener('click', async () => {
         const name = document.getElementById('newServerName').value.trim();
         const url  = document.getElementById('newServerUrl').value.trim();
         const type = document.getElementById('newServerType').value;
+        const command = document.getElementById('newServerCommand').value.trim();
+        const argsRaw = document.getElementById('newServerArgs').value.trim();
+        const args = argsRaw ? argsRaw.split(',').map(a => a.trim()).filter(Boolean) : [];
 
-        if (!name || !url) return alert('Name and URL are required.');
+        if (!name) return alert('Name is required.');
+        if (type === 'stdio') {
+            if (!command) return alert('Command is required for stdio servers.');
+        } else if (!url) {
+            return alert('URL is required.');
+        }
 
-        // Check for duplicate URL already in registry
-        const existing = registeredServers.find(s => s.url === url);
+        // Check for duplicate URL already in registry (normalised comparison)
+        const norm = (u) => u.trim().toLowerCase().replace(/\/+$/, '');
+        const existing = type !== 'stdio'
+            ? registeredServers.find(s => norm(s.url) === norm(url))
+            : null;
         if (existing) {
             // Already registered — just link the session if applicable
             if (_bannerRegisterSessionId) {
@@ -481,11 +499,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const payload = { name, type };
+        if (type === 'stdio') {
+            payload.command = command;
+            payload.args = args;
+        } else {
+            payload.url = url;
+        }
+
         try {
             const res = await fetch('/api/servers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, url, type })
+                body: JSON.stringify(payload)
             });
             if (!res.ok) { const e = await res.json(); alert(e.error); return; }
             const rec = await res.json();
@@ -508,6 +534,11 @@ document.addEventListener('DOMContentLoaded', () => {
             addServerModal.classList.add('hidden');
             document.getElementById('newServerName').value = '';
             document.getElementById('newServerUrl').value  = '';
+            document.getElementById('newServerCommand').value = '';
+            document.getElementById('newServerArgs').value = '';
+            document.getElementById('newServerType').value = 'http';
+            document.getElementById('newServerUrlWrap').classList.remove('hidden');
+            document.getElementById('newServerStdioWrap').classList.add('hidden');
             loadServers();
         } catch (err) {
             addLog('Failed to register server: ' + err, 'error');
@@ -552,12 +583,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             <span class="font-semibold text-gray-700 truncate">${esc(srv.name)}</span>
                             ${sessionsBadge}
                         </div>
-                        <span class="block text-[10px] text-gray-400 truncate">${esc(srv.url)}</span>
+                        <span class="block text-[10px] text-gray-400 truncate">${esc(srv.conn_type === 'stdio' ? (srv.command || 'stdio') : srv.url)}</span>
                     </div>
                 </div>
                 <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                     <button title="Refresh" onclick="window._refreshSrv('${srv.id}')" class="text-indigo-500 hover:text-indigo-700 p-1"><i class="fa-solid fa-arrows-rotate text-[10px]"></i></button>
-                    <button title="Connect" onclick="window._inspectSrv('${srv.id}','${esc(srv.url)}','${srv.conn_type}','${esc(srv.name)}')" class="text-green-500 hover:text-green-700 p-1"><i class="fa-solid fa-plug text-[10px]"></i></button>
+                    <button title="Connect" onclick="window._inspectSrv('${srv.id}',${JSON.stringify(srv.url || '')},'${srv.conn_type}',${JSON.stringify(srv.name || '')},${JSON.stringify(srv.command || '')},${JSON.stringify(srv.args || [])})" class="text-green-500 hover:text-green-700 p-1"><i class="fa-solid fa-plug text-[10px]"></i></button>
                     <button title="Remove" onclick="window._removeSrv('${srv.id}')" class="text-red-400 hover:text-red-600 p-1"><i class="fa-solid fa-trash text-[10px]"></i></button>
                 </div>
             `;
@@ -571,7 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(loadServers, 3000);
     };
 
-    window._inspectSrv = (id, url, type, name) => {
+    window._inspectSrv = (id, url, type, name, command, args) => {
         // Check if we already have an active session for this exact server
         const exists = [...sessions.values()].find(
             s => s.registeredServerId === id && (s.status === 'active' || s.status === 'connecting')
@@ -582,7 +613,8 @@ document.addEventListener('DOMContentLoaded', () => {
             addLog(`Already connected to "${name}" — switched to existing session.`, 'info');
             return;
         }
-        startSession(type || 'http', url, name || url, id);
+        const target = type === 'stdio' ? (command || url) : url;
+        startSession(type || 'http', target, name || url, id, args || []);
         addLog(`Connecting to registered server "${name}"…`);
     };
 

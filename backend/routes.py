@@ -58,23 +58,54 @@ def list_servers():
 def add_server():
     """Register a new MCP server to track.
     Body: { "name": "...", "url": "...", "type": "http" }
+    For stdio: { "name": "...", "type": "stdio", "command": "...", "args": [...] }
     """
     data = request.json or {}
     name = data.get("name", "").strip()
     url = data.get("url", "").strip()
     conn_type = data.get("type", "http")
+    command = data.get("command", "").strip()
+    args = data.get("args", []) or []
 
-    if not name or not url:
-        return jsonify({"error": "name and url are required"}), 400
+    if not name:
+        return jsonify({"error": "name is required"}), 400
 
-    # SSRF protection: reject private / loopback / link-local URLs
-    try:
-        validate_server_url(url)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    if conn_type == "stdio":
+        if not command:
+            return jsonify({"error": "command is required for stdio servers"}), 400
+        if not isinstance(args, list):
+            return jsonify({"error": "args must be a list"}), 400
+        # Reuse the manager's stdio validation (STDIO_ENABLED, allow-list, paths)
+        from .mcp_manager import _validate_stdio
+
+        try:
+            command, args, _ = _validate_stdio(command, args, None)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    else:
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+        # SSRF protection: reject private / loopback / link-local URLs
+        try:
+            validate_server_url(url)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        # Reject duplicate URLs (case-insensitive, trailing-slash-insensitive)
+        existing = registry.find_by_url(url)
+        if existing is not None:
+            return (
+                jsonify(
+                    {
+                        "error": f"A server with this URL is already registered as \"{existing.name}\".",
+                        "existing_id": existing.id,
+                    }
+                ),
+                409,
+            )
 
     server_id = str(uuid.uuid4())
-    rec = registry.add_server(server_id, name, url, conn_type)
+    rec = registry.add_server(server_id, name, url, conn_type, command, args)
     _rebuild_search_index()
     return jsonify(rec.to_dict()), 201
 

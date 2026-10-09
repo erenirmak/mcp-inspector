@@ -2,8 +2,10 @@ import asyncio
 import logging
 import os
 import threading
+from contextlib import asynccontextmanager
 
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
@@ -38,6 +40,8 @@ stop_events: dict[str, asyncio.Event] = {}
 _url_lock = threading.Lock()
 _probing_urls: set[str] = set()
 _user_session_urls: dict[str, int] = {}  # url → active user-session count
+_live_sessions_by_url: dict[str, str] = {}  # url → connection_id of a live user session
+_live_session_data: dict[str, dict] = {}  # url → {tools, resources, prompts} from a live session
 
 
 def _acquire_probe(url: str) -> bool:
@@ -55,18 +59,37 @@ def _release_probe(url: str) -> None:
         _probing_urls.discard(url)
 
 
-def _add_user_session(url: str) -> None:
+def _add_user_session(url: str, connection_id: str) -> None:
     with _url_lock:
         _user_session_urls[url] = _user_session_urls.get(url, 0) + 1
+        # Remember one live session per URL so the registry can reuse its data
+        # instead of opening a second connection while the user is connected.
+        _live_sessions_by_url.setdefault(url, connection_id)
 
 
-def _remove_user_session(url: str) -> None:
+def _remove_user_session(url: str, connection_id: str | None = None) -> None:
     with _url_lock:
         count = _user_session_urls.get(url, 0) - 1
         if count <= 0:
             _user_session_urls.pop(url, None)
+            _live_sessions_by_url.pop(url, None)
+            _live_session_data.pop(url, None)
         else:
             _user_session_urls[url] = count
+            if connection_id is not None and _live_sessions_by_url.get(url) == connection_id:
+                _live_sessions_by_url.pop(url, None)
+
+
+def get_live_session_data(url: str) -> dict | None:
+    """Return the cached tools/resources/prompts of a live user session on *url*.
+
+    The registry uses this to populate a record while the user is interactively
+    connected (URL busy) instead of opening a second connection.
+    Returns ``None`` when no live session data is available for the URL.
+    """
+    with _url_lock:
+        data = _live_session_data.get(url)
+    return data
 
 
 def is_url_busy(url: str) -> bool:
@@ -120,8 +143,43 @@ def serialize_mcp_data(obj):
     return obj
 
 
-async def _fetch_server_data(target: str):
-    """Connect to an HTTP MCP server, fetch tools/resources/prompts, disconnect.
+@asynccontextmanager
+async def _http_transport(target: str, conn_type: str):
+    """Yield a normalised ``(read, write, _session)`` tuple for the given transport.
+
+    ``sse_client`` yields a 2-tuple while ``streamable_http_client`` yields a
+    3-tuple; this wrapper makes both look the same to callers.
+    """
+    if conn_type == "sse":
+        async with sse_client(target) as (read, write):
+            yield read, write, None
+    else:
+        async with streamable_http_client(target) as (read, write, session):
+            yield read, write, session
+
+
+async def _list_session_data(session: ClientSession) -> dict:
+    """Fetch tools/resources/prompts from an initialised session."""
+    tools = await session.list_tools()
+    resources_list: list = []
+    prompts_list: list = []
+    try:
+        resources_list = (await session.list_resources()).resources
+    except Exception:
+        pass
+    try:
+        prompts_list = (await session.list_prompts()).prompts
+    except Exception:
+        pass
+    return {
+        "tools": serialize_mcp_data(tools.tools),
+        "resources": serialize_mcp_data(resources_list),
+        "prompts": serialize_mcp_data(prompts_list),
+    }
+
+
+async def _fetch_server_data(target: str, conn_type: str = "http"):
+    """Connect to an MCP server, fetch tools/resources/prompts, disconnect.
 
     Only one probe per URL at a time; skips if a user session is active.
     Waits up to 10 s if another probe is in progress, then raises RuntimeError.
@@ -141,27 +199,10 @@ async def _fetch_server_data(target: str):
         last_error = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                async with streamable_http_client(target) as (read, write, _):
+                async with _http_transport(target, conn_type) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
-
-                        tools = await session.list_tools()
-                        resources_list: list = []
-                        prompts_list: list = []
-                        try:
-                            resources_list = (await session.list_resources()).resources
-                        except Exception:
-                            pass
-                        try:
-                            prompts_list = (await session.list_prompts()).prompts
-                        except Exception:
-                            pass
-
-                        return {
-                            "tools": serialize_mcp_data(tools.tools),
-                            "resources": serialize_mcp_data(resources_list),
-                            "prompts": serialize_mcp_data(prompts_list),
-                        }
+                        return await _list_session_data(session)
             except Exception as e:
                 last_error = e
                 if attempt < MAX_RETRIES:
@@ -264,7 +305,7 @@ class MCPConnectionManager:
                 command, args, env = _validate_stdio(target, args, env)
                 await self._connect_stdio(connection_id, command, env, args, sid)
             elif conn_type in ("sse", "http"):
-                await self._connect_http(connection_id, target, sid)
+                await self._connect_http(connection_id, target, sid, conn_type)
             else:
                 raise ValueError(f"Unknown connection type: {conn_type!r}")
 
@@ -295,29 +336,14 @@ class MCPConnectionManager:
                 await session.initialize()
                 active_sessions[connection_id] = session
 
-                tools = await session.list_tools()
-                resources_list, prompts_list = [], []
-                try:
-                    resources_list = (await session.list_resources()).resources
-                except Exception:
-                    pass
-                try:
-                    prompts_list = (await session.list_prompts()).prompts
-                except Exception:
-                    pass
-
-                data = {
-                    "tools": serialize_mcp_data(tools.tools),
-                    "resources": serialize_mcp_data(resources_list),
-                    "prompts": serialize_mcp_data(prompts_list),
-                }
+                data = await _list_session_data(session)
                 self.socketio.emit("connection_success", {"id": connection_id, "data": data}, to=sid)
 
                 if connection_id in stop_events:
                     await stop_events[connection_id].wait()
                 self.socketio.emit("log", {"id": connection_id, "message": "Connection closed."}, to=sid)
 
-    async def _connect_http(self, connection_id: str, target: str, sid: str) -> None:
+    async def _connect_http(self, connection_id: str, target: str, sid: str, conn_type: str = "http") -> None:
         for wait in range(10):
             with _url_lock:
                 if target not in _probing_urls:
@@ -329,32 +355,21 @@ class MCPConnectionManager:
             )
             await asyncio.sleep(1)
 
-        _add_user_session(target)
+        _add_user_session(target, connection_id)
         try:
             last_error: Exception | None = None
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    async with streamable_http_client(target) as (read, write, _):
+                    async with _http_transport(target, conn_type) as (read, write, _):
                         async with ClientSession(read, write) as session:
                             await session.initialize()
                             active_sessions[connection_id] = session
 
-                            tools = await session.list_tools()
-                            resources_list, prompts_list = [], []
-                            try:
-                                resources_list = (await session.list_resources()).resources
-                            except Exception:
-                                pass
-                            try:
-                                prompts_list = (await session.list_prompts()).prompts
-                            except Exception:
-                                pass
-
-                            data = {
-                                "tools": serialize_mcp_data(tools.tools),
-                                "resources": serialize_mcp_data(resources_list),
-                                "prompts": serialize_mcp_data(prompts_list),
-                            }
+                            data = await _list_session_data(session)
+                            # Cache so the registry can populate a record while
+                            # this session is live (URL busy) without a 2nd connect.
+                            with _url_lock:
+                                _live_session_data[target] = data
                             self.socketio.emit(
                                 "connection_success", {"id": connection_id, "data": data}, to=sid
                             )
@@ -379,7 +394,7 @@ class MCPConnectionManager:
                         await asyncio.sleep(RETRY_DELAY * attempt)
             raise last_error  # type: ignore[misc]
         finally:
-            _remove_user_session(target)
+            _remove_user_session(target, connection_id)
 
 
 # Singleton
