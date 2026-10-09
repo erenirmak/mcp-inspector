@@ -46,9 +46,14 @@ class ServerRecord:
     prompts: list = field(default_factory=list)
     command: str = ""
     args: list = field(default_factory=list)
+    api_key: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Never expose the raw API key in API responses.
+        if d.get("api_key"):
+            d["api_key"] = "••••••••"
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +110,7 @@ class ServerRegistry:
                         prompts=row.prompts or [],
                         command=getattr(row, "command", "") or "",
                         args=getattr(row, "args", []) or [],
+                        api_key=getattr(row, "api_key", "") or "",
                     )
                     self._servers[rec.id] = rec
             log.info("Loaded %d server(s) from database", len(self._servers))
@@ -134,6 +140,7 @@ class ServerRegistry:
                 row.prompts = rec.prompts
                 row.command = rec.command
                 row.args = rec.args
+                row.api_key = rec.api_key
         except Exception:
             log.exception("Failed to persist server %s to database", rec.id)
 
@@ -157,6 +164,7 @@ class ServerRegistry:
         conn_type: str = "http",
         command: str = "",
         args: list | None = None,
+        api_key: str = "",
     ) -> ServerRecord:
         rec = ServerRecord(
             id=server_id,
@@ -165,6 +173,7 @@ class ServerRegistry:
             conn_type=conn_type,
             command=command or "",
             args=args or [],
+            api_key=api_key or "",
         )
         with self._lock:
             self._servers[server_id] = rec
@@ -239,7 +248,7 @@ class ServerRegistry:
 
         try:
             if rec.conn_type in ("http", "sse"):
-                data = await _fetch_server_data(rec.url, rec.conn_type)
+                data = await _fetch_server_data(rec.url, rec.conn_type, rec.api_key)
             elif rec.conn_type == "stdio":
                 data = await self._probe_stdio(rec)
             else:

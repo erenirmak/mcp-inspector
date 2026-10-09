@@ -47,14 +47,25 @@ def register_socket_events(socketio):
         target = data.get("target")
         env = data.get("env", {})
         args = data.get("args", [])
+        api_key = data.get("api_key", "")
         connection_id = data.get("id") or str(uuid.uuid4())
+
+        # For registered servers, use the API key stored in the registry
+        # (the client only sends a key for ad-hoc Quick Connect sessions).
+        registered_server_id = data.get("registered_server_id")
+        if registered_server_id and connection_type in ("http", "sse"):
+            from .server_registry import registry
+
+            rec = registry.get_server(registered_server_id)
+            if rec is not None:
+                api_key = rec.api_key
 
         # Register this connection under the current socket session and browser
         sid_to_connections.setdefault(sid, set()).add(connection_id)
         connection_owners[connection_id] = browser_id
 
         if manager:
-            manager.connect(connection_id, connection_type, target, env, args, sid=sid)
+            manager.connect(connection_id, connection_type, target, env, args, sid=sid, api_key=api_key)
         else:
             emit("connection_error", {"id": connection_id, "error": "MCP Manager not initialized"})
 

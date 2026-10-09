@@ -143,19 +143,39 @@ def serialize_mcp_data(obj):
     return obj
 
 
+def _auth_headers(api_key: str) -> dict:
+    """Build an ``Authorization: Bearer <key>`` header dict (empty if no key)."""
+    if api_key:
+        return {"Authorization": f"Bearer {api_key}"}
+    return {}
+
+
 @asynccontextmanager
-async def _http_transport(target: str, conn_type: str):
+async def _http_transport(target: str, conn_type: str, api_key: str = ""):
     """Yield a normalised ``(read, write, _session)`` tuple for the given transport.
 
     ``sse_client`` yields a 2-tuple while ``streamable_http_client`` yields a
     3-tuple; this wrapper makes both look the same to callers.
+    ``api_key`` is sent as an ``Authorization: Bearer`` header when set.
     """
+    headers = _auth_headers(api_key)
     if conn_type == "sse":
-        async with sse_client(target) as (read, write):
+        async with sse_client(target, headers=headers or None) as (read, write):
             yield read, write, None
     else:
-        async with streamable_http_client(target) as (read, write, session):
-            yield read, write, session
+        # streamable_http_client has no ``headers`` parameter — inject the
+        # headers via a pre-configured httpx.AsyncClient.
+        import httpx
+
+        client = httpx.AsyncClient(headers=headers) if headers else None
+        try:
+            async with streamable_http_client(
+                target, http_client=client
+            ) as (read, write, session):
+                yield read, write, session
+        finally:
+            if client is not None:
+                await client.aclose()
 
 
 async def _list_session_data(session: ClientSession) -> dict:
@@ -178,7 +198,7 @@ async def _list_session_data(session: ClientSession) -> dict:
     }
 
 
-async def _fetch_server_data(target: str, conn_type: str = "http"):
+async def _fetch_server_data(target: str, conn_type: str = "http", api_key: str = ""):
     """Connect to an MCP server, fetch tools/resources/prompts, disconnect.
 
     Only one probe per URL at a time; skips if a user session is active.
@@ -199,7 +219,7 @@ async def _fetch_server_data(target: str, conn_type: str = "http"):
         last_error = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                async with _http_transport(target, conn_type) as (read, write, _):
+                async with _http_transport(target, conn_type, api_key) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         return await _list_session_data(session)
@@ -231,6 +251,7 @@ class MCPConnectionManager:
         env: dict | None = None,
         args: list | None = None,
         sid: str = "",
+        api_key: str = "",
     ) -> None:
         """Start an async MCP connection.  *sid* is the SocketIO session ID of the
         requesting client — all events for this connection are emitted only to that client."""
@@ -238,7 +259,7 @@ class MCPConnectionManager:
             args = []
         stop_events[connection_id] = asyncio.Event()
         asyncio.run_coroutine_threadsafe(
-            self._connect_async(connection_id, conn_type, target, env, args, sid),
+            self._connect_async(connection_id, conn_type, target, env, args, sid, api_key),
             self.loop,
         )
 
@@ -296,7 +317,14 @@ class MCPConnectionManager:
             )
 
     async def _connect_async(
-        self, connection_id: str, conn_type: str, target: str, env: dict | None, args: list, sid: str
+        self,
+        connection_id: str,
+        conn_type: str,
+        target: str,
+        env: dict | None,
+        args: list,
+        sid: str,
+        api_key: str = "",
     ) -> None:
         try:
             self.socketio.emit("log", {"id": connection_id, "message": f"Connecting to {target}..."}, to=sid)
@@ -305,7 +333,7 @@ class MCPConnectionManager:
                 command, args, env = _validate_stdio(target, args, env)
                 await self._connect_stdio(connection_id, command, env, args, sid)
             elif conn_type in ("sse", "http"):
-                await self._connect_http(connection_id, target, sid, conn_type)
+                await self._connect_http(connection_id, target, sid, conn_type, api_key)
             else:
                 raise ValueError(f"Unknown connection type: {conn_type!r}")
 
@@ -343,7 +371,9 @@ class MCPConnectionManager:
                     await stop_events[connection_id].wait()
                 self.socketio.emit("log", {"id": connection_id, "message": "Connection closed."}, to=sid)
 
-    async def _connect_http(self, connection_id: str, target: str, sid: str, conn_type: str = "http") -> None:
+    async def _connect_http(
+        self, connection_id: str, target: str, sid: str, conn_type: str = "http", api_key: str = ""
+    ) -> None:
         for wait in range(10):
             with _url_lock:
                 if target not in _probing_urls:
@@ -360,7 +390,7 @@ class MCPConnectionManager:
             last_error: Exception | None = None
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    async with _http_transport(target, conn_type) as (read, write, _):
+                    async with _http_transport(target, conn_type, api_key) as (read, write, _):
                         async with ClientSession(read, write) as session:
                             await session.initialize()
                             active_sessions[connection_id] = session

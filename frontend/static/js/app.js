@@ -205,8 +205,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const args = (type === 'stdio')
             ? (document.getElementById('connArgs').value.trim().split(/\s+/).filter(Boolean))
             : [];
+        const apiKey = (type === 'stdio')
+            ? ''
+            : document.getElementById('connApiKey').value.trim();
 
-        startSession(type, target, name, null, args);
+        startSession(type, target, name, null, args, apiKey);
     });
 
     // ── "+" button in connection strip ───────────────────────────────────────
@@ -223,7 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
      * Create a new session entry and emit 'inspect_server' to the backend.
      * Optionally pass registeredServerId when connecting from the server list.
      */
-    function startSession(type, target, name, registeredServerId = null, args = []) {
+    function startSession(type, target, name, registeredServerId = null, args = [], apiKey = '') {
         const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
         sessions.set(id, {
             id, target, type,
@@ -234,8 +237,9 @@ document.addEventListener('DOMContentLoaded', () => {
             bannerDismissed: !!registeredServerId,
             userInitiated: false,
             args,
+            apiKey,
         });
-        socket.emit('inspect_server', { id, type, target, args });
+        socket.emit('inspect_server', { id, type, target, args, api_key: apiKey, registered_server_id: registeredServerId });
         renderConnStrip();
         if (!selectedId) selectSession(id);
         return id;
@@ -274,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const old = sessions.get(id);
         if (!old) return;
         sessions.delete(id);
-        const newId = startSession(old.type, old.target, old.name, old.registeredServerId, old.args || []);
+        const newId = startSession(old.type, old.target, old.name, old.registeredServerId, old.args || [], old.apiKey || '');
         if (selectedId === id) selectSession(newId);
     }
 
@@ -465,6 +469,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const command = document.getElementById('newServerCommand').value.trim();
         const argsRaw = document.getElementById('newServerArgs').value.trim();
         const args = argsRaw ? argsRaw.split(',').map(a => a.trim()).filter(Boolean) : [];
+        const apiKey = document.getElementById('newServerApiKey').value.trim();
 
         if (!name) return alert('Name is required.');
         if (type === 'stdio') {
@@ -505,6 +510,7 @@ document.addEventListener('DOMContentLoaded', () => {
             payload.args = args;
         } else {
             payload.url = url;
+            if (apiKey) payload.api_key = apiKey;
         }
 
         try {
@@ -534,6 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
             addServerModal.classList.add('hidden');
             document.getElementById('newServerName').value = '';
             document.getElementById('newServerUrl').value  = '';
+            document.getElementById('newServerApiKey').value = '';
             document.getElementById('newServerCommand').value = '';
             document.getElementById('newServerArgs').value = '';
             document.getElementById('newServerType').value = 'http';
@@ -602,7 +609,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(loadServers, 3000);
     };
 
-    window._inspectSrv = (id, url, type, name, command, args) => {
+    window._inspectSrv = (id, url, type, name, command, args, apiKey) => {
         // Check if we already have an active session for this exact server
         const exists = [...sessions.values()].find(
             s => s.registeredServerId === id && (s.status === 'active' || s.status === 'connecting')
@@ -614,7 +621,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         const target = type === 'stdio' ? (command || url) : url;
-        startSession(type || 'http', target, name || url, id, args || []);
+        startSession(type || 'http', target, name || url, id, args || [], apiKey || '');
         addLog(`Connecting to registered server "${name}"…`);
     };
 

@@ -45,6 +45,7 @@ class ServerModel(Base):
     prompts = Column(_JSON, default=list, nullable=False)
     command = Column(Text, default="")
     args = Column(_JSON, default=list, nullable=False)
+    api_key = Column(Text, default="")
 
 
 def _migrate_add_columns(engine, is_postgres: bool) -> None:
@@ -69,6 +70,9 @@ def _migrate_add_columns(engine, is_postgres: bool) -> None:
             col_type = "JSON" if is_postgres else "JSON"
             conn.execute(text(f"ALTER TABLE servers ADD COLUMN args {col_type} DEFAULT '[]'"))
             log.info("Migration: added servers.args column")
+        if "api_key" not in existing:
+            conn.execute(text("ALTER TABLE servers ADD COLUMN api_key TEXT DEFAULT ''"))
+            log.info("Migration: added servers.api_key column")
 
 
 # ── Engine / session factory ──────────────────────────────────────────────────

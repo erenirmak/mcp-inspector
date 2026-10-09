@@ -66,6 +66,7 @@ def add_server():
     conn_type = data.get("type", "http")
     command = data.get("command", "").strip()
     args = data.get("args", []) or []
+    api_key = data.get("api_key", "").strip()
 
     if not name:
         return jsonify({"error": "name is required"}), 400
@@ -105,7 +106,7 @@ def add_server():
             )
 
     server_id = str(uuid.uuid4())
-    rec = registry.add_server(server_id, name, url, conn_type, command, args)
+    rec = registry.add_server(server_id, name, url, conn_type, command, args, api_key)
     _rebuild_search_index()
     return jsonify(rec.to_dict()), 201
 

@@ -61,6 +61,7 @@
 
                     <div id="sseFields" class="space-y-2 hidden">
                         <input type="text" id="connUrl" placeholder="http://localhost:8000/mcp" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                        <input type="password" id="connApiKey" placeholder="API key (optional, sent as Bearer token)" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
                     </div>
 
                     <button id="connectBtn" class="w-full text-white bg-indigo-600 hover:bg-indigo-700 font-medium rounded-lg text-sm px-5 py-2.5 shadow-md active:scale-95 transition-all">
@@ -169,8 +170,9 @@
         <div class="bg-white rounded-xl shadow-2xl w-96 p-6 space-y-4">
             <h3 class="text-lg font-bold text-gray-800">Register MCP Server</h3>
             <input type="text" id="newServerName" placeholder="Server name" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
-            <div id="newServerUrlWrap">
+            <div id="newServerUrlWrap" class="space-y-2">
                 <input type="text" id="newServerUrl" placeholder="http://server-url/mcp" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
+                <input type="password" id="newServerApiKey" placeholder="API key (optional, sent as Bearer token)" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
             </div>
             <div id="newServerStdioWrap" class="hidden space-y-2">
                 <input type="text" id="newServerCommand" placeholder="Command (e.g. npx, python)" class="w-full bg-gray-50 border border-gray-300 text-sm rounded-lg p-2.5">
